@@ -6,9 +6,78 @@ from datetime import datetime
 # --------------------------------------------------
 # PAGE CONFIG
 # --------------------------------------------------
-st.set_page_config(page_title="Sovereign Macro Engine", layout="wide")
-st.title("Sovereign Macro Execution Engine")
-st.caption("Execution > Prediction | Survival First")
+st.set_page_config(page_title="Sovereign Macro Engine", layout="wide", page_icon="🛡️")
+
+# --------------------------------------------------
+# THEME / CSS
+# --------------------------------------------------
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
+
+html, body, [class*="css"]  { font-family: 'Inter', sans-serif; }
+
+.block-container { padding-top: 1.6rem; padding-bottom: 3rem; max-width: 1200px; }
+
+/* Streamlit default title/caption restyle */
+h1 { font-weight: 800 !important; letter-spacing: -0.02em; }
+
+.sme-section-label {
+    font-size: 12px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+    color: #8892a6; margin: 28px 0 10px 0; display: flex; align-items: center; gap: 8px;
+}
+.sme-section-label::after {
+    content: ""; flex: 1; height: 1px; background: #232838; margin-left: 8px;
+}
+
+.sme-asof {
+    display:inline-block; font-size:12px; color:#8892a6; background:#12161f;
+    border:1px solid #232838; border-radius:999px; padding:4px 12px; margin-bottom:6px;
+}
+
+.sme-card {
+    background: #12161f; border: 1px solid #232838; border-left: 4px solid var(--accent, #7fa8c9);
+    border-radius: 12px; padding: 16px 18px; height: 100%;
+}
+.sme-card .lbl {
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #8892a6;
+}
+.sme-card .val {
+    font-family: 'JetBrains Mono', monospace; font-size: 26px; font-weight: 700; color: #eef1f7; margin: 6px 0 2px 0;
+}
+.sme-card .delta { font-size: 13px; font-weight: 600; color: var(--accent, #7fa8c9); }
+.sme-card .note { font-size: 11px; color: #6b7385; margin-top: 4px; }
+
+.sme-badge {
+    background: var(--bg, #12161f); border: 1px solid var(--accent, #7fa8c9); border-radius: 12px;
+    padding: 16px 18px; text-align: center; height: 100%;
+}
+.sme-badge .lbl {
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #8892a6;
+}
+.sme-badge .val {
+    font-size: 19px; font-weight: 800; color: var(--accent, #7fa8c9); margin-top: 8px;
+}
+.sme-badge .note { font-size: 11px; color: #6b7385; margin-top: 6px; }
+
+.sme-hero {
+    border-radius: 16px; padding: 24px 28px; margin: 4px 0 26px 0;
+    background: var(--bg, #12161f); border: 1px solid var(--accent, #7fa8c9);
+    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px;
+}
+.sme-hero .tag {
+    font-size: 12px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #8892a6;
+}
+.sme-hero .phase {
+    font-size: 30px; font-weight: 800; color: var(--accent, #7fa8c9); margin-top: 4px;
+}
+.sme-hero .side { text-align: right; font-size: 13px; color: #8892a6; line-height: 1.7; }
+.sme-hero .side b { color: #eef1f7; }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("🛡️ Sovereign Macro Execution Engine")
+st.caption("Execution > Prediction  |  Survival First")
 
 # --------------------------------------------------
 # API CONFIG
@@ -344,9 +413,6 @@ dca_mode = compute_dca_mode(liq_trend, liq_impulse)
 # --------------------------------------------------
 # HELPERS
 # --------------------------------------------------
-def arrow(x):
-    return "↑" if x > 0 else "↓" if x < 0 else "→"
-
 def format_liquidity(x_millions):
     # BUG FIX: FRED liquidity series are denominated in $ millions already.
     # The old version compared that millions-scale number directly against
@@ -361,59 +427,130 @@ def format_liquidity(x_millions):
     return f"${x/1e6:.0f}M"
 
 # --------------------------------------------------
+# STYLE MAPS (map computed states -> color/icon, purely presentational)
+# --------------------------------------------------
+PHASE_STYLE = {
+    "SYSTEM BREAK":              {"accent": "#ff4d4d", "bg": "rgba(255,77,77,0.08)",  "icon": "🚨"},
+    "FRACTURE":                  {"accent": "#ff8c42", "bg": "rgba(255,140,66,0.08)", "icon": "⚠️"},
+    "CREDIT STRESS":             {"accent": "#ffb84d", "bg": "rgba(255,184,77,0.08)", "icon": "⚠️"},
+    "FRAGILE EXPANSION":         {"accent": "#e8d44d", "bg": "rgba(232,212,77,0.08)", "icon": "🌀"},
+    "EXPANSION (credit lagging)":{"accent": "#8de07a", "bg": "rgba(141,224,122,0.08)","icon": "📈"},
+    "LIQUIDITY EXPANSION":       {"accent": "#4dd68c", "bg": "rgba(77,214,140,0.08)", "icon": "✅"},
+    "NORMAL":                    {"accent": "#7fa8c9", "bg": "rgba(127,168,201,0.08)","icon": "➖"},
+}
+REGIME_STYLE = {
+    "QT":           {"accent": "#ff8c42", "bg": "rgba(255,140,66,0.06)", "icon": "🔻"},
+    "SOFT_PIVOT":   {"accent": "#8de07a", "bg": "rgba(141,224,122,0.06)","icon": "🌤️"},
+    "HARD_PIVOT":   {"accent": "#ffb84d", "bg": "rgba(255,184,77,0.06)", "icon": "⚡"},
+    "EARLY_PIVOT":  {"accent": "#4dd6c9", "bg": "rgba(77,214,201,0.06)", "icon": "🔔"},
+    "TRANSITION":   {"accent": "#9aa5b1", "bg": "rgba(154,165,177,0.06)","icon": "↔️"},
+}
+CREDIT_STYLE = {
+    "STRESS SPIKE": {"accent": "#ff4d4d", "bg": "rgba(255,77,77,0.06)", "icon": "🔴"},
+    "WIDENING":     {"accent": "#ffb84d", "bg": "rgba(255,184,77,0.06)","icon": "🟠"},
+    "STABLE":       {"accent": "#4dd68c", "bg": "rgba(77,214,140,0.06)","icon": "🟢"},
+}
+DCA_STYLE = {
+    "HIGH DCA":                          {"accent": "#4dd68c", "bg": "rgba(77,214,140,0.06)"},
+    "MEDIUM DCA":                        {"accent": "#ffb84d", "bg": "rgba(255,184,77,0.06)"},
+    "LOW / PAUSE":                       {"accent": "#9aa5b1", "bg": "rgba(154,165,177,0.06)"},
+    "LOW / PAUSE (insufficient history)":{"accent": "#6b7385", "bg": "rgba(107,115,133,0.06)"},
+}
+RISK_STYLE = {
+    "RISK OFF": {"accent": "#ff4d4d", "bg": "rgba(255,77,77,0.08)"},
+    "ACTIVE":   {"accent": "#4dd68c", "bg": "rgba(77,214,140,0.08)"},
+}
+
+def get_style(mapping, key, default_accent="#7fa8c9", default_bg="rgba(127,168,201,0.06)"):
+    return mapping.get(key, {"accent": default_accent, "bg": default_bg, "icon": ""})
+
+def arrow_html(x, up_color="#4dd68c", down_color="#ff6b6b", flat_color="#9aa5b1"):
+    if x > 0:
+        return f'<span style="color:{up_color};">▲</span>'
+    elif x < 0:
+        return f'<span style="color:{down_color};">▼</span>'
+    return f'<span style="color:{flat_color};">→</span>'
+
+def metric_card(label, value, delta_pct, note="", icon=""):
+    accent = "#4dd68c" if delta_pct > 0 else ("#ff6b6b" if delta_pct < 0 else "#9aa5b1")
+    arrow = arrow_html(delta_pct)
+    html = f"""
+    <div class="sme-card" style="--accent:{accent};">
+        <div class="lbl">{icon} {label}</div>
+        <div class="val">{value}</div>
+        <div class="delta">{delta_pct*100:+.2f}% {arrow}</div>
+        {f'<div class="note">{note}</div>' if note else ''}
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+def badge_card(label, value, style, note=""):
+    html = f"""
+    <div class="sme-badge" style="--accent:{style['accent']}; --bg:{style['bg']}; background:{style['bg']};">
+        <div class="lbl">{label}</div>
+        <div class="val">{style.get('icon','')} {value}</div>
+        {f'<div class="note">{note}</div>' if note else ''}
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+# --------------------------------------------------
 # DASHBOARD
 # --------------------------------------------------
 if as_of_date is not None:
-    st.caption(f"Data as of {as_of_date.strftime('%Y-%m-%d')} (forward-filled to common calendar)")
+    st.markdown(f'<div class="sme-asof">📅 Data as of {as_of_date.strftime("%Y-%m-%d")} '
+                f'(forward-filled to common calendar)</div>', unsafe_allow_html=True)
 
-st.subheader("Macro Chokepoints")
+# --- HERO: the one thing you should see first ---
+phase_style = get_style(PHASE_STYLE, system_phase)
+st.markdown(f"""
+<div class="sme-hero" style="--accent:{phase_style['accent']}; background:{phase_style['bg']};">
+    <div>
+        <div class="tag">Current System Phase</div>
+        <div class="phase">{phase_style['icon']} {system_phase}</div>
+    </div>
+    <div class="side">
+        Regime &nbsp;<b>{REGIME_STYLE.get(regime,{}).get('icon','')} {regime}</b><br/>
+        DCA Mode &nbsp;<b>{dca_mode}</b><br/>
+        Liquidity Momentum &nbsp;<b>{liq_momentum}</b>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+st.markdown('<div class="sme-section-label">📊 Macro Chokepoints</div>', unsafe_allow_html=True)
 
 c1, c2, c3, c4 = st.columns(4)
+with c1:
+    metric_card("Liquidity", format_liquidity(latest_liquidity), liq_trend, icon="💧")
+with c2:
+    metric_card("10Y Yield", f"{latest_yield:.2f}%", yield_trend, icon="📉")
+with c3:
+    metric_card("USD Index (Fed Broad-AFE)", f"{latest_usd_broad:.2f}", dxy_trend, icon="💵",
+                note="Fed's Nominal Advanced Foreign Economies index — NOT the ICE DXY quote. Levels aren't comparable; trend direction is.")
+with c4:
+    metric_card("Credit Spread", f"{latest_credit:.2f}%", credit_trend_val, icon="🏦")
 
-c1.metric("Liquidity",
-          format_liquidity(latest_liquidity),
-          f"{liq_trend*100:.2f}% {arrow(liq_trend)}")
-
-c2.metric("10Y Yield",
-          f"{latest_yield:.2f}%",
-          f"{yield_trend*100:.2f}% {arrow(yield_trend)}")
-
-c3.metric("USD Index (Fed Broad-AFE)",
-          f"{latest_usd_broad:.2f}",
-          f"{dxy_trend*100:.2f}% {arrow(dxy_trend)}",
-          help="Fed's Nominal Advanced Foreign Economies Dollar Index "
-               "(DTWEXAFEGS) -- a free proxy for broad USD strength. "
-               "NOT the ICE US Dollar Index (DXY): different currency "
-               "basket, different weights, different base year. Trend "
-               "(% change) is comparable in spirit; the raw level is not "
-               "the same number you'd see quoted as 'DXY' elsewhere.")
-
-c4.metric("Credit Spread",
-          f"{latest_credit:.2f}%",
-          f"{credit_trend_val*100:.2f}% {arrow(credit_trend_val)}")
-
-# --------------------------------------------------
-# SYSTEM STATE
-# --------------------------------------------------
-st.subheader("System State")
+st.markdown('<div class="sme-section-label">🧭 System State</div>', unsafe_allow_html=True)
 
 c5, c6, c7, c8 = st.columns(4)
-c5.metric("Regime", regime)
-c6.metric("Credit Condition", credit_status)
-c7.metric("System Phase", system_phase)
-c8.metric("Liquidity Momentum", liq_momentum,
-          f"accel: {liq_acceleration*100:.2f}%")
+with c5:
+    badge_card("Regime", regime, get_style(REGIME_STYLE, regime))
+with c6:
+    badge_card("Credit Condition", credit_status, get_style(CREDIT_STYLE, credit_status))
+with c7:
+    badge_card("System Phase", system_phase, phase_style)
+with c8:
+    badge_card("Liquidity Momentum", liq_momentum,
+                {"accent": "#4dd68c" if liq_acceleration > 0 else "#ff6b6b", "bg": "rgba(127,168,201,0.06)"},
+                note=f"acceleration: {liq_acceleration*100:+.2f}%")
 
-# --------------------------------------------------
-# EXECUTION
-# --------------------------------------------------
-st.subheader("Execution")
+st.markdown('<div class="sme-section-label">⚙️ Execution</div>', unsafe_allow_html=True)
+
+STRESS_PHASES = {"SYSTEM BREAK", "FRACTURE", "CREDIT STRESS"}
+risk_status = "RISK OFF" if system_phase in STRESS_PHASES else "ACTIVE"
 
 col1, col2 = st.columns(2)
-col1.metric("DCA Mode", dca_mode)
-# CONSISTENCY FIX: system_phase now has multiple stress states
-# (SYSTEM BREAK, FRACTURE, CREDIT STRESS), but this previously only
-# checked for SYSTEM BREAK -- so a FRACTURE or CREDIT STRESS reading
-# would silently still show "ACTIVE". Flag all stress-family states.
-STRESS_PHASES = {"SYSTEM BREAK", "FRACTURE", "CREDIT STRESS"}
-col2.metric("Risk Status", "RISK OFF" if system_phase in STRESS_PHASES else "ACTIVE")
+with col1:
+    badge_card("DCA Mode", dca_mode, get_style(DCA_STYLE, dca_mode))
+with col2:
+    badge_card("Risk Status", risk_status, get_style(RISK_STYLE, risk_status))
