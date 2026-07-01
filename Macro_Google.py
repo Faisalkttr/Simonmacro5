@@ -4,214 +4,306 @@ import requests
 from datetime import datetime
 
 # --------------------------------------------------
-# PAGE CONFIG & ARCHITECTURE
+# PAGE CONFIG
 # --------------------------------------------------
-st.set_page_config(page_title="Sovereign Macro Engine v2", layout="wide")
+st.set_page_config(page_title="Sovereign Macro Engine", layout="wide")
 st.title("Sovereign Macro Execution Engine")
-st.caption("System State Framework | Front-Running the Central Bank Reaction Function")
+st.caption("Execution > Prediction | Survival First")
 
 # --------------------------------------------------
-# SECURE API CONFIG
+# API CONFIG
 # --------------------------------------------------
 api_key = st.secrets.get("FRED_API_KEY")
 if not api_key:
     api_key = st.sidebar.text_input("Enter FRED API Key", type="password")
 
 if not api_key:
-    st.warning("Please provide a valid FRED API Key to mount the macro engine.")
+    st.warning("Enter FRED API Key")
     st.stop()
 
 start_date = "2015-01-01"
 end_date = datetime.now().strftime("%Y-%m-%d")
 
 # --------------------------------------------------
-# MACRO TICKER MAP
+# SERIES MAP
 # --------------------------------------------------
+# NOTE ON "DXY": DTWEXAFEGS is the Fed's free Nominal Advanced Foreign
+# Economies Dollar Index -- a broad ~26-currency, trade-weighted basket,
+# base year 2006=100. It is NOT the ICE US Dollar Index (DXY), which is a
+# fixed 6-currency basket (EUR-dominated), base year 1973=100, and is
+# proprietary/paid data. The two are highly correlated on % moves but their
+# RAW LEVELS are not comparable -- do not read this index's level as if it
+# were a DXY quote. We label it "USD Index (Fed Broad-AFE)" throughout and
+# only ever use its % change (trend), never its level, in engine logic.
 SERIES = {
-    "DXY": "DTWEXAFEGS",       # Nominal Advanced Foreign Economies Dollar Index
-    "10Y": "DGS10",            # 10-Year Treasury Constant Maturity Rate
-    "FED": "WALCL",            # Federal Reserve Total Assets
-    "RRP": "RRPONTSYD",        # Overnight Reverse Repurchase Agreements
-    "TGA": "WTREGEN",          # Treasury General Account
-    "CREDIT_SPREAD": "BAMLH0A0HYM2"  # ICE BofA High Yield Master II Option-Adjusted Spread
+    "USD_BROAD": "DTWEXAFEGS",   # proxy for USD strength, NOT ICE DXY
+    "10Y": "DGS10",
+    "FED": "WALCL",              # $ millions
+    "RRP": "RRPONTSYD",          # $ billions  <-- different unit than FED/TGA
+    "TGA": "WTREGEN",            # $ millions
+    "CREDIT_SPREAD": "BAMLH0A0HYM2"
 }
 
 # --------------------------------------------------
-# HIGH-UTILITY DATA INGESTION
+# FETCH DATA
 # --------------------------------------------------
 @st.cache_data(ttl=86400)
-def fetch_macro_series(series_id, start, end, api_token):
-    """Fetches raw observations from the FRED API and structures into a clean Series."""
+def fetch(series):
     url = "https://api.stlouisfed.org/fred/series/observations"
     params = {
-        "series_id": series_id,
-        "api_key": api_token,
+        "series_id": series,
+        "api_key": api_key,
         "file_type": "json",
-        "observation_start": start,
-        "observation_end": end
+        "observation_start": start_date,
+        "observation_end": end_date
     }
+
     try:
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        data = response.json()
-        
+        r = requests.get(url, params=params, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+
         if "observations" not in data:
+            st.warning(f"No observations returned for series '{series}'.")
             return pd.Series(dtype="float64")
-            
+
         df = pd.DataFrame(data["observations"])
         df["date"] = pd.to_datetime(df["date"])
         df["value"] = pd.to_numeric(df["value"], errors="coerce")
+
         return df.dropna().set_index("date")["value"]
-    except Exception:
+
+    except requests.exceptions.RequestException as e:
+        st.warning(f"Network/API error fetching '{series}': {e}")
+        return pd.Series(dtype="float64")
+    except Exception as e:
+        st.warning(f"Unexpected error fetching '{series}': {e}")
         return pd.Series(dtype="float64")
 
-# Execute Pipeline Ingestion
-dxy_raw = fetch_macro_series(SERIES["DXY"], start_date, end_date, api_key)
-y10_raw = fetch_macro_series(SERIES["10Y"], start_date, end_date, api_key)
-fed_raw = fetch_macro_series(SERIES["FED"], start_date, end_date, api_key)
-rrp_raw = fetch_macro_series(SERIES["RRP"], start_date, end_date, api_key)
-tga_raw = fetch_macro_series(SERIES["TGA"], start_date, end_date, api_key)
-credit_raw = fetch_macro_series(SERIES["CREDIT_SPREAD"], start_date, end_date, api_key)
+# --------------------------------------------------
+# LOAD DATA
+# --------------------------------------------------
+usd_broad = fetch(SERIES["USD_BROAD"])
+y10 = fetch(SERIES["10Y"])
+fed = fetch(SERIES["FED"])
+rrp = fetch(SERIES["RRP"])
+tga = fetch(SERIES["TGA"])
+credit_spread = fetch(SERIES["CREDIT_SPREAD"])
 
 # --------------------------------------------------
-# TIME-SERIES NORMALIZATION & COHERENCY LAYER
+# ALIGN LIQUIDITY DATA (UNIT FIX: RRP is in $B, FED/TGA are in $M)
 # --------------------------------------------------
-# Consolidate raw variables into a singular frame to preserve exact temporal index alignment
-df_raw = pd.concat([fed_raw, rrp_raw, tga_raw, y10_raw, dxy_raw, credit_raw], axis=1)
-df_raw.columns = ["fed", "rrp", "tga", "y10", "dxy", "credit"]
+if fed.empty or rrp.empty or tga.empty:
+    st.error("One or more liquidity series (FED/RRP/TGA) failed to load. "
+             "Liquidity metrics will be unavailable.")
 
-# Forward-fill high-frequency daily values to cleanly meet weekly balances before resampling
-df_daily = df_raw.ffill()
+rrp_millions = rrp * 1000  # convert $B -> $M so all three series share units
 
-# Eliminate temporal distortion: Resample everything to uniform Weekly Last metrics
-df_weekly = df_daily.resample("W").last().dropna()
-
-# --------------------------------------------------
-# QUANTITATIVE LIQUIDITY & ACCELERATION ENGINE
-# --------------------------------------------------
-# Calculate Net Domestic Liquidity Level
-df_weekly["net_liquidity"] = df_weekly["fed"] - df_weekly["rrp"] - df_weekly["tga"]
-
-# Rate of Change (Impulse): 6-week lookback on a normalized weekly framework
-df_weekly["liq_impulse"] = df_weekly["net_liquidity"].pct_change(6)
-
-# Velocity / Acceleration (Second Derivative): Are central banks injecting faster or rolling over?
-df_weekly["liq_acceleration"] = df_weekly["liq_impulse"].diff(1)
-
-# Rolling Historical Percentiles for Dynamic Regime Calibration
-df_weekly["liq_percentile"] = df_weekly["liq_impulse"].rank(pct=True)
+df_liq = pd.concat([fed, rrp_millions, tga], axis=1)
+df_liq.columns = ["fed", "rrp", "tga"]
+df_liq = df_liq.ffill().dropna()
 
 # --------------------------------------------------
-# CONFIRMATION MATRIX TRENDS (Absolute Difference for Yields/Spreads)
+# ALIGN ALL DAILY SIGNALS TO A COMMON CALENDAR
 # --------------------------------------------------
-df_weekly["yield_trend"] = df_weekly["y10"].diff(6)          # Absolute change in percentage points
-df_weekly["dxy_trend"] = df_weekly["dxy"].pct_change(6)      # Percentage change for currency indexes
-df_weekly["credit_trend"] = df_weekly["credit"].diff(6)      # Absolute spread widening/narrowing
+# Previously usd_broad / y10 / credit_spread were each read independently
+# with .iloc[-1], so "latest" could silently mean different calendar dates
+# across metrics (they publish on different schedules / with different
+# reporting lags). Reindex everything onto one shared daily index and
+# forward-fill, so every "latest" value reflects the same as-of date.
+common_index = df_liq.index
+for s in (usd_broad, y10, credit_spread):
+    if not s.empty:
+        common_index = common_index.union(s.index)
+common_index = common_index.sort_values()
 
-df_weekly = df_weekly.dropna()
+def align(s):
+    if s.empty:
+        return s
+    return s.reindex(common_index).ffill()
 
-# Extract final state indicators from the coherent index
-current_liq_impulse = df_weekly["liq_impulse"].iloc[-1]
-current_liq_accel = df_weekly["liq_acceleration"].iloc[-1]
-current_liq_pct = df_weekly["liq_percentile"].iloc[-1]
+usd_broad_a = align(usd_broad)
+y10_a = align(y10)
+credit_spread_a = align(credit_spread)
 
-current_yield_trend = df_weekly["yield_trend"].iloc[-1]
-current_dxy_trend = df_weekly["dxy_trend"].iloc[-1]
-current_credit_trend = df_weekly["credit_trend"].iloc[-1]
-
-latest_net_liq = df_weekly["net_liquidity"].iloc[-1]
-latest_y10 = df_weekly["y10"].iloc[-1]
-latest_dxy = df_weekly["dxy"].iloc[-1]
-latest_credit = df_weekly["credit"].iloc[-1]
+as_of_date = common_index.max() if len(common_index) else None
 
 # --------------------------------------------------
-# SYSTEM STATE MACHINES (State-Based Execution)
+# LIQUIDITY ENGINE (SMOOTHED)
 # --------------------------------------------------
-def determine_credit_state(spread_diff, spread_level):
-    """Evaluates systemic credit conditions using velocity and absolute boundaries."""
-    if spread_diff > 0.40 or spread_level > 5.5:
+net_liquidity = df_liq["fed"] - df_liq["rrp"] - df_liq["tga"]  # all in $M now
+
+liq_impulse_raw = net_liquidity.pct_change(30)
+liq_impulse = liq_impulse_raw.rolling(5).mean().dropna()
+
+liq_trend = liq_impulse.iloc[-1] if not liq_impulse.empty else 0
+
+# --------------------------------------------------
+# CORE SIGNALS
+# --------------------------------------------------
+# NOTE: window/smoothing choices below are intentionally standardized
+# (30-day % change, 5-day rolling smooth) across every trend signal so
+# that liq_trend, yield_trend, dxy_trend, and credit_trend_val are all
+# measured on the same time basis before being compared/combined in the
+# regime and system-phase classifiers below. (Previously yield_trend used
+# an unsmoothed 60-day window while liquidity/credit used smoothed 30-day
+# windows -- an apples-to-oranges comparison.)
+TREND_WINDOW = 30
+SMOOTH_WINDOW = 5
+
+def trend(series, window=TREND_WINDOW, smooth=SMOOTH_WINDOW):
+    if series.empty:
+        return 0
+    raw = series.pct_change(window)
+    smoothed = raw.rolling(smooth).mean().dropna()
+    if smoothed.empty:
+        return 0
+    return smoothed.iloc[-1]
+
+yield_trend = trend(y10_a)
+dxy_trend = trend(usd_broad_a)          # "dxy_trend" kept as variable name
+credit_trend_val = trend(credit_spread_a)
+
+# --------------------------------------------------
+# ACTUAL LEVEL VALUES
+# --------------------------------------------------
+latest_yield = y10_a.iloc[-1] if not y10_a.empty else 0
+latest_usd_broad = usd_broad_a.iloc[-1] if not usd_broad_a.empty else 0
+latest_credit = credit_spread_a.iloc[-1] if not credit_spread_a.empty else 0
+latest_liquidity = net_liquidity.iloc[-1] if not net_liquidity.empty else 0
+
+# --------------------------------------------------
+# CREDIT STATE
+# --------------------------------------------------
+def credit_state(val):
+    if val > 0.15:
         return "STRESS SPIKE"
-    elif spread_diff > 0:
+    elif val > 0:
         return "WIDENING"
     else:
         return "STABLE"
 
-credit_status = determine_credit_state(current_credit_trend, latest_credit)
+credit_status = credit_state(credit_trend_val)
 
-def detect_system_phase(liq_imp, dxy_t, credit_st):
-    """Calculates systemic structural integrity based on liquidity constraints."""
-    if credit_st == "STRESS SPIKE":
+# --------------------------------------------------
+# SYSTEM PHASE
+# --------------------------------------------------
+def detect_system_phase(liq, dxy, credit):
+
+    if liq < 0 and dxy > 0 and credit == "WIDENING":
+        return "FRACTURE"
+
+    if liq < 0 and dxy > 0 and credit == "STRESS SPIKE":
         return "SYSTEM BREAK"
-    if liq_imp > 0 and dxy_t < 0:
-        return "LIQUIDITY EXPANSION"
-    if liq_imp < 0 and dxy_t > 0:
-        return "LIQUIDITY CONTRACTION"
-    return "TRANSITION"
 
-system_phase = detect_system_phase(current_liq_impulse, current_dxy_trend, credit_status)
+    return "NORMAL"
 
-def classify_regime(y_trend, d_trend, liq_imp):
-    """Evaluates macro regimes safely bypassing mutually exclusive parameter loops."""
-    if liq_imp > 0.01 and y_trend < 0:
-        return "EARLY_PIVOT"
-    if y_trend > 0 and d_trend > 0:
+system_phase = detect_system_phase(liq_trend, dxy_trend, credit_status)
+
+# --------------------------------------------------
+# REGIME
+# --------------------------------------------------
+def classify_regime(y, d):
+    if y > 0 and d > 0:
         return "QT"
-    if y_trend < 0 and d_trend < 0:
+    elif y < 0 and d < 0:
         return "SOFT_PIVOT"
-    if y_trend < 0 and d_trend > 0:
+    elif y < 0 and d > 0:
         return "HARD_PIVOT"
-    return "TRANSITION"
+    else:
+        return "TRANSITION"
 
-regime = classify_regime(current_yield_trend, current_dxy_trend, current_liq_impulse)
+regime = classify_regime(yield_trend, dxy_trend)
 
 # --------------------------------------------------
-# DYNAMIC ALLOCATION & GRADIENT RISK LAYERS
+# SAFER EARLY PIVOT (FILTERED)
 # --------------------------------------------------
-# DCA Mode strictly driven by rolling historical percentiles
-if current_liq_pct >= 0.80:
-    dca_mode = "HIGH DCA (Aggressive Accumulation)"
-elif current_liq_pct >= 0.30:
-    dca_mode = "MEDIUM DCA (Steady Build)"
+# BUG FIX: original condition required regime == "QT" (which by
+# classify_regime's own definition requires yield_trend > 0) AND
+# yield_trend < 0 in the same branch -- a contradiction that could never
+# be true, so EARLY_PIVOT was dead code. An "early pivot" is better
+# understood as liquidity expanding while yields/dollar direction are
+# still ambiguous (i.e. regime == "TRANSITION"), so we gate on that
+# instead.
+if liq_trend > 0.01 and yield_trend < 0 and regime == "TRANSITION":
+    regime = "EARLY_PIVOT"
+
+# --------------------------------------------------
+# DCA LOGIC
+# --------------------------------------------------
+if liq_trend > 0.05:
+    dca_mode = "HIGH DCA"
+elif liq_trend > 0:
+    dca_mode = "MEDIUM DCA"
 else:
-    dca_mode = "LOW / PAUSE (Capital Preservation)"
-
-# Gradient Defensive Matrix
-if credit_status == "STRESS SPIKE" or system_phase == "SYSTEM BREAK":
-    risk_status = "MAX DEFENSIVE"
-elif current_liq_impulse < 0 or current_liq_accel < 0:
-    risk_status = "DEFENSIVE"
-elif current_liq_impulse > 0 and current_dxy_trend < 0:
-    risk_status = "RISK ON"
-else:
-    risk_status = "NEUTRAL"
+    dca_mode = "LOW / PAUSE"
 
 # --------------------------------------------------
-# VISUAL UI ENGINE (Streamlit Output Template)
+# HELPERS
 # --------------------------------------------------
 def arrow(x):
     return "↑" if x > 0 else "↓" if x < 0 else "→"
 
-def format_liquidity(x):
-    if abs(x) >= 1e12: return f"{x/1e12:.2f}T"
-    if abs(x) >= 1e9: return f"{x/1e9:.0f}B"
-    return f"{x/1e6:.0f}M"
+def format_liquidity(x_millions):
+    # BUG FIX: FRED liquidity series are denominated in $ millions already.
+    # The old version compared that millions-scale number directly against
+    # 1e9 / 1e12 thresholds meant for raw dollars, so it could never reach
+    # the "B" or "T" branches and always printed misleadingly small "M"
+    # values. Convert to raw dollars first, then bucket.
+    x = x_millions * 1e6
+    if abs(x) >= 1e12:
+        return f"${x/1e12:.2f}T"
+    elif abs(x) >= 1e9:
+        return f"${x/1e9:.0f}B"
+    return f"${x/1e6:.0f}M"
+
+# --------------------------------------------------
+# DASHBOARD
+# --------------------------------------------------
+if as_of_date is not None:
+    st.caption(f"Data as of {as_of_date.strftime('%Y-%m-%d')} (forward-filled to common calendar)")
 
 st.subheader("Macro Chokepoints")
-m1, m2, m3, m4 = st.columns(4)
 
-m1.metric("Net Liquidity", format_liquidity(latest_net_liq), f"Pctile: {current_liq_pct*100:.0f}%")
-m2.metric("10Y Treasury Yield", f"{latest_y10:.2f}%", f"{current_yield_trend*100:.0f} bps {arrow(current_yield_trend)}")
-m3.metric("Nominal DXY (AFE)", f"{latest_dxy:.2f}", f"{current_dxy_trend*100:.2f}% {arrow(current_dxy_trend)}")
-m4.metric("HY Credit Spread", f"{latest_credit:.2f}%", f"{current_credit_trend*100:.0f} bps {arrow(current_credit_trend)}")
+c1, c2, c3, c4 = st.columns(4)
 
-st.subheader("System State Machine")
-s1, s2, s3, s4 = st.columns(4)
-s1.metric("Regime Class", regime)
-s2.metric("Credit Condition", credit_status)
-s3.metric("System Phase", system_phase)
-s4.metric("Liquidity Acceleration", f"{current_liq_accel*100:.2f}% {arrow(current_liq_accel)}")
+c1.metric("Liquidity",
+          format_liquidity(latest_liquidity),
+          f"{liq_trend*100:.2f}% {arrow(liq_trend)}")
 
-st.subheader("Execution Vectors")
-e1, e2 = st.columns(2)
-e1.metric("Dynamic DCA Mode", dca_mode)
-e2.metric("Gradient Risk Status", risk_status)
+c2.metric("10Y Yield",
+          f"{latest_yield:.2f}%",
+          f"{yield_trend*100:.2f}% {arrow(yield_trend)}")
+
+c3.metric("USD Index (Fed Broad-AFE)",
+          f"{latest_usd_broad:.2f}",
+          f"{dxy_trend*100:.2f}% {arrow(dxy_trend)}",
+          help="Fed's Nominal Advanced Foreign Economies Dollar Index "
+               "(DTWEXAFEGS) -- a free proxy for broad USD strength. "
+               "NOT the ICE US Dollar Index (DXY): different currency "
+               "basket, different weights, different base year. Trend "
+               "(% change) is comparable in spirit; the raw level is not "
+               "the same number you'd see quoted as 'DXY' elsewhere.")
+
+c4.metric("Credit Spread",
+          f"{latest_credit:.2f}%",
+          f"{credit_trend_val*100:.2f}% {arrow(credit_trend_val)}")
+
+# --------------------------------------------------
+# SYSTEM STATE
+# --------------------------------------------------
+st.subheader("System State")
+
+c5, c6, c7 = st.columns(3)
+c5.metric("Regime", regime)
+c6.metric("Credit Condition", credit_status)
+c7.metric("System Phase", system_phase)
+
+# --------------------------------------------------
+# EXECUTION
+# --------------------------------------------------
+st.subheader("Execution")
+
+col1, col2 = st.columns(2)
+col1.metric("DCA Mode", dca_mode)
+col2.metric("Risk Status", "RISK OFF" if system_phase == "SYSTEM BREAK" else "ACTIVE")
